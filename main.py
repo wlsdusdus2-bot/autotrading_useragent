@@ -210,6 +210,9 @@ async def _notify_position_closed(symbol: str):
                     avg_price = sum(float(f["execPrice"]) * float(f["execQty"]) for f in recent) / total_qty
                     payload["exit_price"] = str(round(avg_price, 8))
                     logger.info(f"[ManualDetect] fills fallback exit_price={avg_price:.8f} ({len(recent)} fills)")
+                total_fee = sum(float(f.get("execFee", 0)) for f in recent)
+                if total_fee > 0:
+                    payload["commission"] = str(round(total_fee, 8))
         except Exception as e:
             logger.warning(f"[ManualDetect] fills fallback failed: {e}")
     await _post_to_central("/api/agent/position-closed", payload)
@@ -230,11 +233,12 @@ async def _notify_tp_filled(symbol: str, pos: dict, prev_qty: float, curr_qty: f
     qty_closed = round(prev_qty - curr_qty, 9)
     client = get_exchange_client()
     actual_exit_price = None
+    best_fill = None
     try:
         fills = await client.get_recent_fills(symbol, limit=5)
         if fills:
-            best = min(fills, key=lambda f: abs(float(f.get("execQty", 0)) - qty_closed))
-            actual_exit_price = best.get("execPrice")
+            best_fill = min(fills, key=lambda f: abs(float(f.get("execQty", 0)) - qty_closed))
+            actual_exit_price = best_fill.get("execPrice")
     except Exception as e:
         logger.warning(f"[TpFilled] fills 조회 실패: {e}")
 
@@ -244,6 +248,7 @@ async def _notify_tp_filled(symbol: str, pos: dict, prev_qty: float, curr_qty: f
         "exit_price": str(actual_exit_price) if actual_exit_price else None,
         "qty_closed": str(qty_closed),
         "remaining_qty": str(curr_qty),
+        "commission": str(best_fill.get("execFee", 0)) if best_fill else None,
     }
     await _post_to_central("/api/agent/tp-filled", payload)
 

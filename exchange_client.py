@@ -499,6 +499,7 @@ class AgentExchangeClient:
                         "execTime": str(int(t["timestamp"])),
                         # ccxt "limit"/"market" → capitalize → "Limit"/"Market" (Bybit raw 포맷과 통일)
                         "orderType": (t.get("type") or "").capitalize(),
+                        "execFee": str(t.get("fee", {}).get("cost") or 0),
                     }
                     for t in trades
                 ]
