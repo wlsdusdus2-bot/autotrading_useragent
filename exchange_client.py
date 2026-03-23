@@ -439,34 +439,27 @@ class AgentExchangeClient:
                     logger.warning(f"Failed to cancel regular orders for {symbol}: {e}")
 
             if self.exchange_id == "bitget":
-                # ccxt cancel_all_orders는 일반 주문만 취소 — plan(stop/TP) 주문은 네이티브 V2 API로 별도 취소
+                # ccxt cancel_all_orders는 일반 주문만 취소 — plan(stop/TP) 주문은 별도 취소
                 canceled_count = 0
                 for plan_type in ["plan", "profit_loss", "pos_profit"]:
                     try:
-                        pending_resp = await self.exchange.private_mix_get_v2_mix_order_orders_plan_pending({
-                            "symbol": symbol,
-                            "productType": "USDT-FUTURES",
-                            "isPlan": plan_type
-                        })
-                        data = pending_resp.get("data") or {}
-                        entrusted_list = data.get("entrustedList", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                        for p_order in entrusted_list:
-                            order_id = p_order.get("orderId")
+                        # CCXT에 내장된 stop=True (orders-plan-pending 라우팅) 기능 활용
+                        plan_orders = await self.exchange.fetch_open_orders(
+                            ccxt_symbol, params={"stop": True, "isPlan": plan_type}
+                        )
+                        for p_order in plan_orders:
+                            order_id = p_order.get("id")
                             if order_id:
                                 try:
-                                    await self.exchange.private_mix_post_v2_mix_order_cancel_plan_order({
-                                        "orderId": order_id,
-                                        "symbol": symbol,
-                                        "productType": "USDT-FUTURES",
-                                        "marginCoin": "USDT",
-                                    })
+                                    await self.exchange.cancel_order(
+                                        order_id, ccxt_symbol, params={"stop": True, "isPlan": plan_type}
+                                    )
                                     canceled_count += 1
                                 except Exception as ce:
-                                    logger.warning(f"Failed to cancel native plan order {order_id}: {ce}")
+                                    logger.warning(f"Failed to cancel plan order {order_id}: {ce}")
                     except Exception as pe:
-                        if "400172" not in str(pe):
-                            logger.warning(f"Failed to fetch {plan_type} orders for {symbol}: {pe}")
-                            
+                        logger.warning(f"Failed to fetch {plan_type} orders via CCXT for {symbol}: {pe}")
+                
                 if canceled_count > 0:
                     logger.info(f"Cancelled {canceled_count} plan orders for {symbol}")
 
