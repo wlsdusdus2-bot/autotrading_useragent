@@ -492,10 +492,12 @@ class AgentExchangeClient:
                         f"[TrailingStop] callback_ratio {callback_ratio}% < 0.5% min → using 0.5%"
                     )
                     callback_ratio = 0.5
-                # triggerPrice: Bitget track_plan의 활성화 가격 (activation threshold)
-                # 활성화 조건은 LONG/SHORT 모두 mark_price <= triggerPrice
-                # mark_price * 2로 설정 → 항상 즉시 활성화
-                trigger_price = round(mark_price * 2, 1)
+                # triggerPrice: Bitget track_plan 활성화 조건은 mark_price >= triggerPrice(SELL) / mark_price <= triggerPrice(BUY)
+                # 즉시 활성화하려면 이미 통과한 가격으로 설정 (SELL: 현재가 1% 아래, BUY: 현재가 1% 위)
+                if close_side == "sell":
+                    trigger_price = round(mark_price * 0.99, 1)  # LONG 청산: 현재가 아래 → 즉시 활성
+                else:
+                    trigger_price = round(mark_price * 1.01, 1)  # SHORT 청산: 현재가 위 → 즉시 활성
                 resp = await self.exchange.private_mix_post_v2_mix_order_place_plan_order({
                     "symbol": symbol,
                     "productType": "USDT-FUTURES",
@@ -556,7 +558,7 @@ class AgentExchangeClient:
             logger.error(f"Failed to cancel order {order_id}: {e}")
             raise ExchangeError(f"cancel_order failed for {order_id}: {e}")
 
-    async def cancel_all_orders(self, symbol: str) -> bool:
+    async def cancel_all_orders(self, symbol: str, cancel_trailing_stop: bool = True) -> bool:
         try:
             await self._ensure_markets()
             ccxt_symbol = self._to_ccxt_symbol(symbol)
@@ -569,21 +571,25 @@ class AgentExchangeClient:
 
             if self.exchange_id == "bitget":
                 # ccxt cancel_all_orders는 일반 주문만 취소 — plan(stop/TP) 주문은 네이티브 API로 일괄 취소
-                # V2 API의 cancel-plan-order에 orderId를 생략하여 심볼 단위 일괄 취소 유도
-                try:
-                    await self.exchange.private_mix_post_v2_mix_order_cancel_plan_order({
-                        "symbol": symbol,
-                        "productType": "USDT-FUTURES",
-                        "marginCoin": "USDT",
-                    })
-                    logger.info(f"All plan orders batch-cancelled natively for {symbol}")
-                except Exception as ce:
-                    # 22001 (취소할 주문 없음), 400172 (파라미터 에러 - 플랜타입 필요시 대비) 무시
-                    if "22001" not in str(ce) and "400171" not in str(ce):
-                        logger.warning(f"Failed to batch cancel plan orders for {symbol}: {ce}")
-                        
+                # cancel_trailing_stop=False 시 track_plan(trailing stop)은 보존
+                if cancel_trailing_stop:
+                    try:
+                        await self.exchange.private_mix_post_v2_mix_order_cancel_plan_order({
+                            "symbol": symbol,
+                            "productType": "USDT-FUTURES",
+                            "marginCoin": "USDT",
+                        })
+                        logger.info(f"All plan orders batch-cancelled natively for {symbol}")
+                    except Exception as ce:
+                        # 22001 (취소할 주문 없음), 400172 (파라미터 에러 - 플랜타입 필요시 대비) 무시
+                        if "22001" not in str(ce) and "400171" not in str(ce):
+                            logger.warning(f"Failed to batch cancel plan orders for {symbol}: {ce}")
+
                 # 400172 방어를 위해 각 planType 명시적 일괄 취소도 병행
-                for p_type in ["profit_plan", "pos_loss", "pos_profit", "normal_plan", "track_plan"]:
+                plan_types = ["profit_plan", "pos_loss", "pos_profit", "normal_plan"]
+                if cancel_trailing_stop:
+                    plan_types.append("track_plan")
+                for p_type in plan_types:
                     try:
                         await self.exchange.private_mix_post_v2_mix_order_cancel_plan_order({
                             "symbol": symbol,

@@ -733,8 +733,11 @@ async def execute_order(request: Request, execute_req: ExecuteRequest):
 
         elif request.order_type == "adjust":
             # 재조정: 기존 주문 전체 취소 → SL 설정 → TP/DCA 주문 재배치
-            await client.cancel_all_orders(symbol)
-            _trailing_stop_active.discard(symbol)  # 기존 trailing stop 상태 초기화
+            # trailing_stop_distance 없고 trailing stop 활성 상태면 track_plan 보존
+            preserve_trailing = (request.trailing_stop_distance is None and symbol in _trailing_stop_active)
+            await client.cancel_all_orders(symbol, cancel_trailing_stop=not preserve_trailing)
+            if not preserve_trailing:
+                _trailing_stop_active.discard(symbol)
 
             # 최신 포지션 조회 (DCA 체결로 인한 수량 변동 반영)
             position = await client.get_position(symbol)
